@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, build_opener
+from urllib.error import HTTPError, URLError
 
 from dateutil import parser
 
@@ -68,25 +69,36 @@ def scrape_reviews(maps_url: str, days: int) -> list[dict]:
         raise
     except Exception as exc:  # pragma: no cover - erro de última camada
         raise MapsScraperError(
-            "Não foi possível coletar avaliações automaticamente. "
-            "O layout do Google Maps pode ter mudado; tente novamente mais tarde."
-        , code=BLOCKED_TEMPORARY) from exc
+            "Não foi possível coletar avaliações automaticamente neste momento. "
+            "Isso normalmente é bloqueio temporário, timeout de rede ou variação transitória do Google Maps."
+            ,
+            code=BLOCKED_TEMPORARY,
+        ) from exc
 
 
 def _resolve_maps_url(maps_url: str) -> str:
+    raw_url = maps_url.strip()
     request = Request(
-        maps_url.strip(),
+        raw_url,
         headers={
             "User-Agent": ScraperConfig.user_agent,
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
         },
     )
     opener = build_opener()
-    with opener.open(request, timeout=20) as response:
-        resolved = response.geturl()
+    try:
+        with opener.open(request, timeout=20) as response:
+            resolved = response.geturl()
+    except (HTTPError, URLError, TimeoutError) as exc:
+        _log_event("warn", "resolve_maps_url_failed", reason=type(exc).__name__)
+        return raw_url
 
     parsed = urlparse(resolved)
     if "google" not in parsed.netloc.lower() and "goo.gl" not in parsed.netloc.lower():
+        original_parsed = urlparse(raw_url)
+        if "google" in original_parsed.netloc.lower() or "goo.gl" in original_parsed.netloc.lower():
+            _log_event("warn", "resolved_url_not_google_keep_original", resolved=resolved)
+            return raw_url
         raise MapsScraperError("URL resolvida não parece ser do Google Maps.", code=BLOCKED_TEMPORARY)
 
     return resolved
