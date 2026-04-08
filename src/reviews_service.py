@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from typing import Any
@@ -73,12 +74,92 @@ def _parse_absolute_date(raw_date: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def normalize_review_date(raw_text: Any, now_utc: datetime) -> datetime | None:
+    """
+    Normaliza datas de review em formatos absolutos e relativos para UTC.
+
+    Suporta, entre outros:
+    - ISO/RFC válidos (timezone-aware ou naive)
+    - "x days/weeks/months ago"
+    - "a day ago", "yesterday"
+    - variações básicas em PT: "há x dias", "x dias atrás", "ontem"
+    """
+    if raw_text is None:
+        return None
+
+    text = str(raw_text).strip()
+    if not text:
+        return None
+
+    absolute = _parse_absolute_date(text)
+    if absolute:
+        return absolute
+
+    normalized_text = text.lower().strip()
+    normalized_text = re.sub(r"\s+", " ", normalized_text)
+
+    if normalized_text in {"yesterday", "ontem"}:
+        return now_utc - timedelta(days=1)
+
+    relative_patterns: list[tuple[str, str]] = [
+        (r"^(?P<qty>\d+|a|an|one)\s+(?P<unit>day|days|week|weeks|month|months)\s+ago$", "en"),
+        (r"^há\s+(?P<qty>\d+|um|uma)\s+(?P<unit>dia|dias|semana|semanas|mês|mes|meses)$", "pt"),
+        (r"^(?P<qty>\d+|um|uma)\s+(?P<unit>dia|dias|semana|semanas|mês|mes|meses)\s+atrás$", "pt"),
+    ]
+
+    qty_aliases = {
+        "a": 1,
+        "an": 1,
+        "one": 1,
+        "um": 1,
+        "uma": 1,
+    }
+    unit_days = {
+        "day": 1,
+        "days": 1,
+        "dia": 1,
+        "dias": 1,
+        "week": 7,
+        "weeks": 7,
+        "semana": 7,
+        "semanas": 7,
+        "month": 30,
+        "months": 30,
+        "mês": 30,
+        "mes": 30,
+        "meses": 30,
+    }
+
+    for pattern, _ in relative_patterns:
+        match = re.match(pattern, normalized_text)
+        if not match:
+            continue
+
+        qty_raw = match.group("qty")
+        unit_raw = match.group("unit")
+
+        qty = qty_aliases.get(qty_raw)
+        if qty is None:
+            try:
+                qty = int(qty_raw)
+            except ValueError:
+                return None
+
+        days_delta = unit_days.get(unit_raw)
+        if days_delta is None:
+            return None
+        return now_utc - timedelta(days=qty * days_delta)
+
+    return None
+
+
 def _normalize_review(item: dict[str, Any], maps_url: str | None = None) -> dict[str, Any]:
     return {
         "title": item.get("title") or item.get("placeName") or "",
         "name": item.get("name") or item.get("reviewerName") or item.get("authorName") or "",
         "text": item.get("text") or item.get("reviewText") or item.get("comment") or "",
-        "publishedAtDate": item.get("publishedAtDate") or item.get("publishedAt") or item.get("date") or "",
+        "publishedAtDate": item.get("publishedAtDate") or "",
+        "publishedAt": item.get("publishedAt") or item.get("publishAt") or item.get("date") or "",
         "stars": item.get("stars") if item.get("stars") is not None else item.get("rating"),
         "likesCount": item.get("likesCount") if item.get("likesCount") is not None else item.get("likes"),
         "reviewUrl": item.get("reviewUrl") or item.get("reviewLink") or maps_url or "",
@@ -164,18 +245,20 @@ def process_and_filter_reviews(
 
     items = _read_reviews_payload(file_bytes=file_bytes, file_name=file_name)
     total_items = len(items)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(days=days)
 
     normalized: list[dict[str, Any]] = []
     for item in items:
         mapped = _normalize_review(item, maps_url=maps_url)
-        published_dt = _parse_absolute_date(mapped.get("publishedAtDate"))
+        published_raw = mapped.get("publishedAtDate") or mapped.get("publishedAt")
+        published_dt = normalize_review_date(published_raw, now_utc=now_utc)
         if not published_dt:
             continue
         if published_dt < cutoff:
             continue
 
-        mapped["publishedAtDate"] = published_dt.date().isoformat()
+        mapped["publishedAtDate"] = published_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         normalized.append({key: mapped.get(key) for key in _STABLE_COLUMNS})
 
     return normalized, total_items
