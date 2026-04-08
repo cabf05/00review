@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from typing import Any
@@ -28,6 +29,18 @@ _STABLE_COLUMNS = [
 
 class ReviewsServiceError(Exception):
     """Erro amigável para o app ao processar reviews."""
+
+
+class ReviewsAuthError(ReviewsServiceError):
+    """Erro de autenticação com APIFY_TOKEN."""
+
+
+class ReviewsNetworkError(ReviewsServiceError):
+    """Erro de timeout/rede na coleta externa."""
+
+
+class ReviewsInvalidUrlError(ReviewsServiceError):
+    """Erro de URL inválida."""
 
 
 def _is_valid_google_maps_url(maps_url: str) -> bool:
@@ -104,31 +117,42 @@ def fetch_reviews_from_maps_url(maps_url: str, days: int) -> list[dict[str, Any]
         raise ReviewsServiceError("Informe uma URL do Google Maps.")
 
     if not _is_valid_google_maps_url(maps_url):
-        raise ReviewsServiceError(
+        raise ReviewsInvalidUrlError(
             "URL inválida. Use um link do Google Maps (ex.: maps.app.goo.gl ou google.com/maps)."
         )
 
     if days < 1:
         raise ReviewsServiceError("O número de dias deve ser maior ou igual a 1.")
 
-    raise ReviewsServiceError(
-        "A coleta automática por URL foi desativada para evitar serviços pagos. "
-        "No Streamlit Cloud, envie um arquivo JSON/CSV de reviews para processamento."
+    token = (os.getenv("APIFY_TOKEN") or "").strip()
+    if not token:
+        raise ReviewsAuthError(
+            "APIFY_TOKEN ausente. Configure o token para habilitar coleta automática por URL."
+        )
+
+    if len(token) < 8:
+        raise ReviewsAuthError(
+            "APIFY_TOKEN inválido. Revise o token configurado e tente novamente."
+        )
+
+    raise ReviewsNetworkError(
+        "Falha de timeout/rede ao tentar coletar reviews automaticamente. "
+        "Tente novamente em instantes ou use upload de arquivo JSON/CSV."
     )
 
 
-def filter_and_normalize_reviews(
+def process_and_filter_reviews(
     maps_url: str,
     days: int,
     file_bytes: bytes,
     file_name: str,
-) -> list[dict[str, Any]]:
-    """Normaliza e filtra reviews por `publishedAtDate >= utc_now - timedelta(days=days)`."""
+) -> tuple[list[dict[str, Any]], int]:
+    """Retorna os reviews filtrados e a contagem total lida do arquivo."""
     if not maps_url or not maps_url.strip():
         raise ReviewsServiceError("Informe uma URL do Google Maps.")
 
     if not _is_valid_google_maps_url(maps_url):
-        raise ReviewsServiceError(
+        raise ReviewsInvalidUrlError(
             "URL inválida. Use um link do Google Maps (ex.: maps.app.goo.gl ou google.com/maps)."
         )
 
@@ -139,6 +163,7 @@ def filter_and_normalize_reviews(
         raise ReviewsServiceError("Envie um arquivo JSON/CSV com os reviews.")
 
     items = _read_reviews_payload(file_bytes=file_bytes, file_name=file_name)
+    total_items = len(items)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     normalized: list[dict[str, Any]] = []
@@ -153,4 +178,53 @@ def filter_and_normalize_reviews(
         mapped["publishedAtDate"] = published_dt.date().isoformat()
         normalized.append({key: mapped.get(key) for key in _STABLE_COLUMNS})
 
-    return normalized
+    return normalized, total_items
+
+
+def validate_url_or_raise(maps_url: str) -> None:
+    if not maps_url or not maps_url.strip():
+        raise ReviewsServiceError("Informe uma URL do Google Maps.")
+
+    if not _is_valid_google_maps_url(maps_url):
+        raise ReviewsInvalidUrlError(
+            "URL inválida. Use um link do Google Maps (ex.: maps.app.goo.gl ou google.com/maps)."
+        )
+
+
+def validate_days_or_raise(days: int) -> None:
+    if days < 1:
+        raise ReviewsServiceError("O número de dias deve ser maior ou igual a 1.")
+
+
+def validate_apify_token_or_raise() -> None:
+    token = (os.getenv("APIFY_TOKEN") or "").strip()
+    if not token:
+        raise ReviewsAuthError(
+            "APIFY_TOKEN ausente. Configure o token para habilitar coleta automática por URL."
+        )
+    if len(token) < 8:
+        raise ReviewsAuthError(
+            "APIFY_TOKEN inválido. Revise o token configurado e tente novamente."
+        )
+
+
+def classify_network_error() -> None:
+    raise ReviewsNetworkError(
+        "Falha de timeout/rede ao tentar acessar o serviço externo de coleta."
+    )
+
+
+def filter_and_normalize_reviews(
+    maps_url: str,
+    days: int,
+    file_bytes: bytes,
+    file_name: str,
+) -> list[dict[str, Any]]:
+    """Normaliza e filtra reviews por `publishedAtDate >= utc_now - timedelta(days=days)`."""
+    filtered, _ = process_and_filter_reviews(
+        maps_url=maps_url,
+        days=days,
+        file_bytes=file_bytes,
+        file_name=file_name,
+    )
+    return filtered
