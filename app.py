@@ -128,13 +128,34 @@ if coletar:
     except ReviewsNetworkError as exc:
         st.error(f"Timeout ou falha de rede durante a coleta: {exc}")
     except MapsScraperError as exc:
-        message = str(exc).lower()
-        if "layout" in message or "mudado" in message:
-            st.error(f"Estrutura do Google Maps alterada: {exc}")
-        elif "timeout" in message:
-            st.error(f"Timeout durante a coleta automática: {exc}")
-        else:
-            st.error(f"Bloqueio temporário ou falha na coleta automática: {exc}")
+        scraper_error_map = {
+            "BLOCKED_TEMPORARY": (
+                "O Google Maps bloqueou temporariamente a coleta automática.",
+                "Aguarde alguns minutos e tente novamente; se persistir, use Upload de JSON/CSV.",
+            ),
+            "DOM_CHANGED": (
+                "A estrutura da página do Google Maps mudou.",
+                "Tente novamente mais tarde; enquanto isso, use Upload de JSON/CSV.",
+            ),
+            "TIMEOUT": (
+                "A coleta excedeu o tempo limite.",
+                "Tente novamente com menos dias ou use Upload de JSON/CSV.",
+            ),
+            "NO_REVIEWS": (
+                "Não encontramos avaliações no período informado.",
+                "Aumente o intervalo de dias ou valide se o local possui reviews recentes.",
+            ),
+        }
+        code = getattr(exc, "code", "BLOCKED_TEMPORARY")
+        friendly_message, suggested_action = scraper_error_map.get(
+            code,
+            (
+                "Falha temporária durante a coleta automática.",
+                "Tente novamente em instantes ou use Upload de JSON/CSV.",
+            ),
+        )
+        st.error(f"{friendly_message} ({code})")
+        st.info(f"Ação sugerida: {suggested_action}")
     except ReviewsServiceError as exc:
         st.error(str(exc))
     except Exception:

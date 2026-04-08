@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 import re
 import tempfile
 import time
@@ -12,8 +13,20 @@ from urllib.request import Request, build_opener
 from dateutil import parser
 
 
+logger = logging.getLogger(__name__)
+
+BLOCKED_TEMPORARY = "BLOCKED_TEMPORARY"
+DOM_CHANGED = "DOM_CHANGED"
+TIMEOUT = "TIMEOUT"
+NO_REVIEWS = "NO_REVIEWS"
+
+
 class MapsScraperError(Exception):
     """Erro amigável para falhas de scraping do Google Maps."""
+
+    def __init__(self, message: str, code: str = BLOCKED_TEMPORARY) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -22,6 +35,8 @@ class ScraperConfig:
     step_retries: int = 3
     no_new_items_limit: int = 5
     scroll_pause_seconds: float = 1.2
+    retry_base_delay_seconds: float = 0.6
+    retry_max_delay_seconds: float = 4.0
     user_agent: str = (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
@@ -44,15 +59,18 @@ def scrape_reviews(maps_url: str, days: int) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     try:
+        _log_event("info", "init_scrape", days=days)
         final_url = _resolve_maps_url(maps_url)
-        return _scrape_with_playwright(final_url, cutoff, config, started_at)
+        reviews = _scrape_with_playwright(final_url, cutoff, config, started_at)
+        _log_event("info", "scrape_completed", total_reviews=len(reviews))
+        return reviews
     except MapsScraperError:
         raise
     except Exception as exc:  # pragma: no cover - erro de última camada
         raise MapsScraperError(
             "Não foi possível coletar avaliações automaticamente. "
             "O layout do Google Maps pode ter mudado; tente novamente mais tarde."
-        ) from exc
+        , code=BLOCKED_TEMPORARY) from exc
 
 
 def _resolve_maps_url(maps_url: str) -> str:
@@ -69,7 +87,7 @@ def _resolve_maps_url(maps_url: str) -> str:
 
     parsed = urlparse(resolved)
     if "google" not in parsed.netloc.lower() and "goo.gl" not in parsed.netloc.lower():
-        raise MapsScraperError("URL resolvida não parece ser do Google Maps.")
+        raise MapsScraperError("URL resolvida não parece ser do Google Maps.", code=BLOCKED_TEMPORARY)
 
     return resolved
 
@@ -92,6 +110,7 @@ def _scrape_with_playwright(
     reviews_by_id: dict[str, dict[str, Any]] = {}
     no_new_items = 0
     stop_due_to_cutoff = False
+    checkpoint = ScraperCheckpoint()
 
     with sync_playwright() as p:
         with tempfile.TemporaryDirectory(prefix="maps-scraper-") as user_data_dir:
@@ -112,6 +131,7 @@ def _scrape_with_playwright(
                 config,
                 started_at,
                 PlaywrightTimeoutError,
+                TIMEOUT,
             )
 
             _open_reviews_panel(page, config, started_at, PlaywrightTimeoutError)
@@ -121,7 +141,14 @@ def _scrape_with_playwright(
             while True:
                 _ensure_not_timed_out(started_at, config.total_timeout_seconds)
 
-                current_batch = _extract_reviews_from_dom(page)
+                current_batch = _run_step_with_retries(
+                    lambda: _extract_reviews_from_dom(page),
+                    "parse do lote de reviews",
+                    config,
+                    started_at,
+                    PlaywrightTimeoutError,
+                    DOM_CHANGED,
+                )
                 added_count = 0
                 oldest_in_batch: datetime | None = None
 
@@ -132,6 +159,7 @@ def _scrape_with_playwright(
                     if rid not in reviews_by_id:
                         reviews_by_id[rid] = item
                         added_count += 1
+                        checkpoint.last_review_id = rid
 
                     published_dt = _safe_parse_datetime(item.get("publishedAtDate"))
                     if published_dt is not None:
@@ -139,6 +167,11 @@ def _scrape_with_playwright(
                             published_dt
                             if oldest_in_batch is None
                             else min(oldest_in_batch, published_dt)
+                        )
+                        checkpoint.oldest_seen_date = (
+                            published_dt
+                            if checkpoint.oldest_seen_date is None
+                            else min(checkpoint.oldest_seen_date, published_dt)
                         )
 
                 if oldest_in_batch is not None and oldest_in_batch < cutoff:
@@ -152,17 +185,31 @@ def _scrape_with_playwright(
                 if stop_due_to_cutoff or no_new_items >= config.no_new_items_limit:
                     break
 
-                container.evaluate("(el) => { el.scrollBy(0, Math.floor(el.clientHeight * 0.9)); }")
-                page.wait_for_timeout(int(config.scroll_pause_seconds * 1000))
+                _run_step_with_retries(
+                    lambda: _scroll_container(container, page, config),
+                    "scroll no painel de avaliações",
+                    config,
+                    started_at,
+                    PlaywrightTimeoutError,
+                    TIMEOUT,
+                )
 
             browser_context.close()
 
-    return _finalize_reviews(reviews_by_id, cutoff)
+    if stop_due_to_cutoff:
+        _log_event("info", "stop_reason", reason="min_date_reached", checkpoint=checkpoint.to_dict())
+    elif no_new_items >= config.no_new_items_limit:
+        _log_event("info", "stop_reason", reason="no_new_items", checkpoint=checkpoint.to_dict())
+
+    return _finalize_reviews(reviews_by_id, cutoff, checkpoint)
 
 
 def _open_reviews_panel(page, config: ScraperConfig, started_at: float, timeout_exc: type[Exception]) -> None:
     selectors = [
         'button[jsaction*="pane.reviewChart.moreReviews"]',
+        'button[data-value="Reviews"]',
+        'button[aria-label*="reviews"]',
+        'button[aria-label*="avalia"]',
         'button:has-text("avalia")',
         'button:has-text("reviews")',
         '[role="tab"]:has-text("Avaliações")',
@@ -177,7 +224,7 @@ def _open_reviews_panel(page, config: ScraperConfig, started_at: float, timeout_
                 return
         raise MapsScraperError(
             "Não foi possível abrir o painel de avaliações. O layout da página pode ter mudado."
-        )
+        , code=DOM_CHANGED)
 
     _run_step_with_retries(
         _click_first_found,
@@ -185,6 +232,7 @@ def _open_reviews_panel(page, config: ScraperConfig, started_at: float, timeout_
         config,
         started_at,
         timeout_exc,
+        DOM_CHANGED,
     )
 
 
@@ -203,9 +251,16 @@ def _sort_by_most_recent(page, config: ScraperConfig, started_at: float, timeout
                 return
         raise MapsScraperError(
             "Não foi possível ordenar por 'Mais recentes'. O layout da página pode ter mudado."
-        )
+        , code=DOM_CHANGED)
 
-    _run_step_with_retries(_sort, "ordenar reviews por mais recentes", config, started_at, timeout_exc)
+    _run_step_with_retries(
+        _sort,
+        "ordenar reviews por mais recentes",
+        config,
+        started_at,
+        timeout_exc,
+        DOM_CHANGED,
+    )
 
 
 def _find_reviews_container(page):
@@ -213,6 +268,8 @@ def _find_reviews_container(page):
         'div[role="main"] div[aria-label*="Reviews"]',
         'div[role="main"] div[aria-label*="Avaliações"]',
         'div[role="feed"]',
+        'div[role="region"] div[role="feed"]',
+        "div.m6QErb[aria-label]",
     ]
     for selector in candidates:
         loc = page.locator(selector).first
@@ -220,20 +277,22 @@ def _find_reviews_container(page):
             return loc
     raise MapsScraperError(
         "Não foi possível localizar o container de avaliações. O layout da página pode ter mudado."
-    )
+    , code=DOM_CHANGED)
 
 
 def _extract_reviews_from_dom(page) -> list[dict[str, Any]]:
     js = """
     () => {
-      const cards = Array.from(document.querySelectorAll('div.jftiEf, div[data-review-id]'));
+      const cards = Array.from(document.querySelectorAll(
+        'div.jftiEf, div[data-review-id], div[jscontroller*="e6Mltc"], div[class*="jJc9Ad"]'
+      ));
       return cards.map((card) => {
         const reviewId = card.getAttribute('data-review-id') || card.getAttribute('jslog') || '';
 
         const nameEl = card.querySelector('.d4r55, .TSUbDb');
-        const textEl = card.querySelector('.wiI7pd, .MyEned');
+        const textEl = card.querySelector('.wiI7pd, .MyEned, span[jsname="bN97Pc"], div[data-expandable-section]');
         const starEl = card.querySelector('[role="img"][aria-label*="star"], [role="img"][aria-label*="estrela"]');
-        const dateEl = card.querySelector('.rsqaWe, .xRkPPb, span[class*="rsqaWe"]');
+        const dateEl = card.querySelector('.rsqaWe, .xRkPPb, span[class*="rsqaWe"], span[data-value="review-date"], span[jsname="rsqaWe"]');
         const likesEl = card.querySelector('.GBkF3d, .pkWtMe');
         const reviewLinkEl = card.querySelector('a[href*="/maps/reviews/"]');
         const ownerRespEl = card.querySelector('.CDe7pd, .wiI7pd + div');
@@ -273,6 +332,11 @@ def _extract_reviews_from_dom(page) -> list[dict[str, Any]]:
             }
         )
     return normalized_items
+
+
+def _scroll_container(container, page, config: ScraperConfig) -> None:
+    container.evaluate("(el) => { el.scrollBy(0, Math.floor(el.clientHeight * 0.9)); }")
+    page.wait_for_timeout(int(config.scroll_pause_seconds * 1000))
 
 
 def _normalize_review_id(raw_review_id: str, idx: int) -> str:
@@ -325,7 +389,11 @@ def _safe_parse_datetime(raw: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _finalize_reviews(reviews_by_id: dict[str, dict[str, Any]], cutoff: datetime) -> list[dict]:
+def _finalize_reviews(
+    reviews_by_id: dict[str, dict[str, Any]],
+    cutoff: datetime,
+    checkpoint: "ScraperCheckpoint",
+) -> list[dict]:
     out: list[dict] = []
     for item in reviews_by_id.values():
         published_dt = _safe_parse_datetime(item.get("publishedAtDate"))
@@ -348,6 +416,12 @@ def _finalize_reviews(reviews_by_id: dict[str, dict[str, Any]], cutoff: datetime
         out.append(normalized)
 
     out.sort(key=lambda r: r.get("publishedAtDate", ""), reverse=True)
+    if not out:
+        _log_event("warn", "stop_reason", reason="no_reviews_after_filter", checkpoint=checkpoint.to_dict())
+        raise MapsScraperError(
+            "Nenhuma avaliação encontrada para o período informado.",
+            code=NO_REVIEWS,
+        )
     return out
 
 
@@ -357,6 +431,7 @@ def _run_step_with_retries(
     config: ScraperConfig,
     started_at: float,
     timeout_exception_type: type[Exception],
+    code_on_failure: str,
 ) -> Any:
     last_error: Exception | None = None
     for attempt in range(1, config.step_retries + 1):
@@ -365,23 +440,73 @@ def _run_step_with_retries(
             return fn()
         except (timeout_exception_type, MapsScraperError) as exc:
             last_error = exc
+            _log_event(
+                "warn",
+                "step_retry",
+                step=step_name,
+                attempt=attempt,
+                reason=type(exc).__name__,
+            )
             if attempt >= config.step_retries:
                 break
-            time.sleep(0.6 * attempt)
+            _sleep_with_exponential_backoff(attempt, config)
         except Exception as exc:  # pragma: no cover
             last_error = exc
+            _log_event(
+                "warn",
+                "step_retry",
+                step=step_name,
+                attempt=attempt,
+                reason=type(exc).__name__,
+            )
             if attempt >= config.step_retries:
                 break
-            time.sleep(0.6 * attempt)
+            _sleep_with_exponential_backoff(attempt, config)
 
+    _log_event(
+        "error",
+        "step_failed",
+        step=step_name,
+        retries=config.step_retries,
+        reason=type(last_error).__name__ if last_error else "unknown",
+    )
     raise MapsScraperError(
         f"Falha ao {step_name} após {config.step_retries} tentativas. "
         "O layout do Google Maps pode ter mudado."
-    ) from last_error
+        , code=code_on_failure) from last_error
 
 
 def _ensure_not_timed_out(started_at: float, total_timeout_seconds: int) -> None:
     if time.monotonic() - started_at > total_timeout_seconds:
         raise MapsScraperError(
             f"Tempo limite total excedido ({total_timeout_seconds}s) durante a coleta de reviews."
+            ,
+            code=TIMEOUT,
         )
+
+
+def _sleep_with_exponential_backoff(attempt: int, config: ScraperConfig) -> None:
+    delay = min(config.retry_base_delay_seconds * (2 ** (attempt - 1)), config.retry_max_delay_seconds)
+    time.sleep(delay)
+
+
+@dataclass
+class ScraperCheckpoint:
+    last_review_id: str | None = None
+    oldest_seen_date: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "last_review_id": self.last_review_id,
+            "oldest_seen_date": self.oldest_seen_date.isoformat() if self.oldest_seen_date else None,
+        }
+
+
+def _log_event(level: str, event: str, **payload: Any) -> None:
+    message = {"event": event, **payload}
+    if level == "error":
+        logger.error(message)
+    elif level == "warn":
+        logger.warning(message)
+    else:
+        logger.info(message)
