@@ -229,6 +229,22 @@ def process_and_filter_reviews(
     file_name: str,
 ) -> tuple[list[dict[str, Any]], int]:
     """Retorna os reviews filtrados e a contagem total lida do arquivo."""
+    filtered, total_items, _ = process_and_filter_reviews_with_counts(
+        maps_url=maps_url,
+        days=days,
+        file_bytes=file_bytes,
+        file_name=file_name,
+    )
+    return filtered, total_items
+
+
+def process_and_filter_reviews_with_counts(
+    maps_url: str,
+    days: int,
+    file_bytes: bytes,
+    file_name: str,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Retorna reviews filtrados, total bruto e total deduplicado."""
     if not maps_url or not maps_url.strip():
         raise ReviewsServiceError("Informe uma URL do Google Maps.")
 
@@ -244,13 +260,33 @@ def process_and_filter_reviews(
         raise ReviewsServiceError("Envie um arquivo JSON/CSV com os reviews.")
 
     items = _read_reviews_payload(file_bytes=file_bytes, file_name=file_name)
+    return normalize_and_filter_items(items=items, maps_url=maps_url, days=days)
+
+
+def normalize_and_filter_items(
+    items: list[dict[str, Any]],
+    maps_url: str,
+    days: int,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Normaliza, deduplica e filtra reviews por janela de dias."""
     total_items = len(items)
     now_utc = datetime.now(timezone.utc)
     cutoff = now_utc - timedelta(days=days)
 
+    seen_keys: set[tuple[Any, ...]] = set()
     normalized: list[dict[str, Any]] = []
     for item in items:
         mapped = _normalize_review(item, maps_url=maps_url)
+        dedup_key = (
+            (mapped.get("reviewUrl") or "").strip(),
+            (mapped.get("name") or "").strip(),
+            (mapped.get("text") or "").strip(),
+            (mapped.get("publishedAtDate") or mapped.get("publishedAt") or "").strip(),
+        )
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+
         published_raw = mapped.get("publishedAtDate") or mapped.get("publishedAt")
         published_dt = normalize_review_date(published_raw, now_utc=now_utc)
         if not published_dt:
@@ -261,7 +297,7 @@ def process_and_filter_reviews(
         mapped["publishedAtDate"] = published_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         normalized.append({key: mapped.get(key) for key in _STABLE_COLUMNS})
 
-    return normalized, total_items
+    return normalized, total_items, len(seen_keys)
 
 
 def validate_url_or_raise(maps_url: str) -> None:
