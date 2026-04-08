@@ -347,9 +347,11 @@ def _raise_if_temporarily_blocked(page) -> None:
     block_signals = [
         "unusual traffic",
         "detected unusual traffic",
+        "automated queries",
         "verify you are human",
         "i'm not a robot",
         "não sou um robô",
+        "bloqueou temporariamente",
         "tráfego incomum",
         "captcha",
     ]
@@ -364,7 +366,16 @@ def _classify_unexpected_scraper_error(exc: Exception) -> tuple[str, str]:
     details = str(exc).strip()
     normalized = details.lower()
 
-    if any(signal in normalized for signal in ("captcha", "unusual traffic", "tráfego incomum")):
+    if any(
+        signal in normalized
+        for signal in (
+            "captcha",
+            "unusual traffic",
+            "tráfego incomum",
+            "automated queries",
+            "bloqueou temporariamente",
+        )
+    ):
         return (
             BLOCKED_TEMPORARY,
             "O Google Maps bloqueou temporariamente a coleta automática por validação anti-bot.",
