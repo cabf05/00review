@@ -1,6 +1,12 @@
 # Coletor de Reviews (Streamlit)
 
-Aplicação Streamlit para coleta de reviews de locais no Google Maps usando provedor gerenciado (Apify API).
+Aplicação Streamlit para **processar e filtrar** reviews do Google Maps no deploy do Streamlit Cloud, **sem uso de serviços pagos**.
+
+## Como funciona
+
+1. Você informa a URL do local no Google Maps (para validação/referência).
+2. Você envia um arquivo `.json` ou `.csv` com os reviews.
+3. O app normaliza as colunas e filtra pelo período (`utc_now - timedelta(days=X)`) usando `publishedAtDate` (ou equivalente).
 
 ## Pré-requisitos
 
@@ -13,40 +19,26 @@ Aplicação Streamlit para coleta de reviews de locais no Google Maps usando pro
 pip install -r requirements.txt
 ```
 
-## Executar localmente
+## Streamlit Cloud (deploy)
 
-```bash
-streamlit run app.py
-```
+- Configure o app com `app.py` como arquivo principal.
+- Não há necessidade de token de serviço pago.
 
-Depois, acesse a URL local exibida no terminal (normalmente `http://localhost:8501`).
+## Formato esperado do arquivo
 
-## Variáveis de ambiente
-
-- `APIFY_TOKEN`: token de acesso da sua conta Apify (obrigatório).
-- `APIFY_REVIEWS_ACTOR_ID`: actor de reviews (opcional, default `compass/google-maps-reviews-scraper`).
-- `APIFY_TIMEOUT_SECS`: timeout da execução do actor em segundos (opcional, default `180`).
-- `APIFY_MAX_RETRIES`: quantidade máxima de tentativas com backoff exponencial (opcional, default `4`).
-- `APIFY_BACKOFF_BASE_SECS`: base em segundos do backoff exponencial (opcional, default `1.5`).
-
-Exemplo (Linux/macOS):
-
-```bash
-export APIFY_TOKEN="seu_token_aqui"
-streamlit run app.py
-```
-
-Exemplo (Windows PowerShell):
-
-```powershell
-$env:APIFY_TOKEN="seu_token_aqui"
-streamlit run app.py
-```
+Campos recomendados (aceita aliases comuns):
+- `title`
+- `name`
+- `text`
+- `publishedAtDate` (obrigatório para entrar no filtro de período)
+- `stars`
+- `likesCount`
+- `reviewUrl`
+- `responseFromOwnerText`
 
 ## Estrutura
 
-- `app.py`: interface Streamlit e mensagens amigáveis.
-- `src/reviews_service.py`: valida URL, chama API oficial do provedor, aplica retry/backoff, normaliza e filtra por data absoluta.
+- `app.py`: interface Streamlit para upload/processamento.
+- `src/reviews_service.py`: valida URL, leitura JSON/CSV, normalização e filtro por data absoluta.
 - `requirements.txt`: dependências do projeto.
-- `.streamlit/config.toml`: tema/configuração do app.
-- `README.md`: instruções de uso e deploy.
+- `README.md`: instruções de uso.
