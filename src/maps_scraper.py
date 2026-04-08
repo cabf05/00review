@@ -19,6 +19,17 @@ BLOCKED_TEMPORARY = "BLOCKED_TEMPORARY"
 DOM_CHANGED = "DOM_CHANGED"
 TIMEOUT = "TIMEOUT"
 NO_REVIEWS = "NO_REVIEWS"
+TEMP_BLOCK_SIGNALS = (
+    "unusual traffic",
+    "detected unusual traffic",
+    "automated queries",
+    "verify you are human",
+    "i'm not a robot",
+    "não sou um robô",
+    "bloqueou temporariamente",
+    "tráfego incomum",
+    "captcha",
+)
 
 
 class MapsScraperError(Exception):
@@ -344,18 +355,7 @@ def _raise_if_temporarily_blocked(page) -> None:
         # Em estados transitórios de renderização, essa leitura pode falhar.
         # Não devemos sobrescrever o fluxo principal nem mascarar o erro real.
         return
-    block_signals = [
-        "unusual traffic",
-        "detected unusual traffic",
-        "automated queries",
-        "verify you are human",
-        "i'm not a robot",
-        "não sou um robô",
-        "bloqueou temporariamente",
-        "tráfego incomum",
-        "captcha",
-    ]
-    if any(signal in page_text for signal in block_signals):
+    if any(signal in page_text for signal in TEMP_BLOCK_SIGNALS):
         raise MapsScraperError(
             "O Google solicitou validação humana (captcha/tráfego incomum).",
             code=BLOCKED_TEMPORARY,
@@ -369,11 +369,7 @@ def _classify_unexpected_scraper_error(exc: Exception) -> tuple[str, str]:
     if any(
         signal in normalized
         for signal in (
-            "captcha",
-            "unusual traffic",
-            "tráfego incomum",
-            "automated queries",
-            "bloqueou temporariamente",
+            *TEMP_BLOCK_SIGNALS,
         )
     ):
         return (
