@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 
 from src.reviews_service import ReviewsServiceError, filter_and_normalize_reviews
 
@@ -44,6 +45,8 @@ st.subheader("Resultados")
 
 if "reviews_df" not in st.session_state:
     st.session_state.reviews_df = pd.DataFrame()
+if "processed_reviews" not in st.session_state:
+    st.session_state.processed_reviews = False
 
 if coletar:
     try:
@@ -57,6 +60,7 @@ if coletar:
             file_name=reviews_file.name,
         )
         st.session_state.reviews_df = pd.DataFrame(reviews)
+        st.session_state.processed_reviews = True
 
         if st.session_state.reviews_df.empty:
             st.info("Nenhum review encontrado dentro do período informado.")
@@ -67,26 +71,34 @@ if coletar:
     except Exception:
         st.error("Falha inesperada ao processar o arquivo de reviews.")
 
-if not st.session_state.reviews_df.empty:
-    st.dataframe(st.session_state.reviews_df, use_container_width=True)
+df = st.session_state.reviews_df
+has_reviews = not df.empty
+timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
-    csv_data = st.session_state.reviews_df.to_csv(index=False).encode("utf-8")
-    json_data = st.session_state.reviews_df.to_json(orient="records", force_ascii=False, indent=2)
-
-    dcol1, dcol2 = st.columns(2)
-    with dcol1:
-        st.download_button(
-            "Download CSV",
-            data=csv_data,
-            file_name="reviews.csv",
-            mime="text/csv",
-        )
-    with dcol2:
-        st.download_button(
-            "Download JSON",
-            data=json_data,
-            file_name="reviews.json",
-            mime="application/json",
-        )
+if has_reviews:
+    st.dataframe(df, use_container_width=True)
+elif st.session_state.processed_reviews:
+    st.warning("Nenhum review disponível no período selecionado. Os downloads estão desabilitados.")
 else:
     st.info("Os reviews aparecerão aqui após clicar em **Processar reviews**.")
+
+csv_data = df.to_csv(index=False).encode("utf-8") if has_reviews else b""
+json_data = df.to_json(orient="records", force_ascii=False, indent=2) if has_reviews else "[]"
+
+dcol1, dcol2 = st.columns(2)
+with dcol1:
+    st.download_button(
+        "Baixar CSV",
+        data=csv_data,
+        file_name=f"reviews_{timestamp}.csv",
+        mime="text/csv",
+        disabled=not has_reviews,
+    )
+with dcol2:
+    st.download_button(
+        "Baixar JSON",
+        data=json_data,
+        file_name=f"reviews_{timestamp}.json",
+        mime="application/json",
+        disabled=not has_reviews,
+    )
