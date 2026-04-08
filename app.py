@@ -155,6 +155,8 @@ if coletar:
             ),
         )
         st.error(f"{friendly_message} ({code})")
+        if code == "BLOCKED_TEMPORARY":
+            st.caption(f"Detalhe técnico: {exc}")
         st.info(f"Ação sugerida: {suggested_action}")
     except ReviewsServiceError as exc:
         st.error(str(exc))

@@ -67,10 +67,11 @@ def scrape_reviews(maps_url: str, days: int) -> list[dict]:
     except MapsScraperError:
         raise
     except Exception as exc:  # pragma: no cover - erro de última camada
+        code, message = _classify_unexpected_scraper_error(exc)
         raise MapsScraperError(
-            "Não foi possível coletar avaliações automaticamente. "
-            "O layout do Google Maps pode ter mudado; tente novamente mais tarde."
-        , code=BLOCKED_TEMPORARY) from exc
+            message,
+            code=code,
+        ) from exc
 
 
 def _resolve_maps_url(maps_url: str) -> str:
@@ -133,6 +134,7 @@ def _scrape_with_playwright(
                 PlaywrightTimeoutError,
                 TIMEOUT,
             )
+            _raise_if_temporarily_blocked(page)
 
             _open_reviews_panel(page, config, started_at, PlaywrightTimeoutError)
             _sort_by_most_recent(page, config, started_at, PlaywrightTimeoutError)
@@ -140,6 +142,7 @@ def _scrape_with_playwright(
 
             while True:
                 _ensure_not_timed_out(started_at, config.total_timeout_seconds)
+                _raise_if_temporarily_blocked(page)
 
                 current_batch = _run_step_with_retries(
                     lambda: _extract_reviews_from_dom(page),
@@ -332,6 +335,51 @@ def _extract_reviews_from_dom(page) -> list[dict[str, Any]]:
             }
         )
     return normalized_items
+
+
+def _raise_if_temporarily_blocked(page) -> None:
+    try:
+        page_text = (page.inner_text("body", timeout=2000) or "").lower()
+    except Exception:
+        # Em estados transitórios de renderização, essa leitura pode falhar.
+        # Não devemos sobrescrever o fluxo principal nem mascarar o erro real.
+        return
+    block_signals = [
+        "unusual traffic",
+        "detected unusual traffic",
+        "verify you are human",
+        "i'm not a robot",
+        "não sou um robô",
+        "tráfego incomum",
+        "captcha",
+    ]
+    if any(signal in page_text for signal in block_signals):
+        raise MapsScraperError(
+            "O Google solicitou validação humana (captcha/tráfego incomum).",
+            code=BLOCKED_TEMPORARY,
+        )
+
+
+def _classify_unexpected_scraper_error(exc: Exception) -> tuple[str, str]:
+    details = str(exc).strip()
+    normalized = details.lower()
+
+    if any(signal in normalized for signal in ("captcha", "unusual traffic", "tráfego incomum")):
+        return (
+            BLOCKED_TEMPORARY,
+            "O Google Maps bloqueou temporariamente a coleta automática por validação anti-bot.",
+        )
+    if any(signal in normalized for signal in ("timeout", "timed out", "tempo limite")):
+        return (
+            TIMEOUT,
+            "A coleta excedeu o tempo limite durante a navegação automática no Google Maps.",
+        )
+
+    return (
+        DOM_CHANGED,
+        "Não foi possível coletar avaliações automaticamente. "
+        "A estrutura do Google Maps pode ter mudado; tente novamente mais tarde.",
+    )
 
 
 def _scroll_container(container, page, config: ScraperConfig) -> None:
