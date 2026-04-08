@@ -107,6 +107,11 @@ def _scrape_with_playwright(
             "Instale 'playwright' e os browsers antes de executar o scraper."
         ) from exc
 
+    try:
+        from playwright_stealth import stealth_sync
+    except Exception:
+        stealth_sync = None
+
     reviews_by_id: dict[str, dict[str, Any]] = {}
     no_new_items = 0
     stop_due_to_cutoff = False
@@ -121,9 +126,17 @@ def _scrape_with_playwright(
                 locale="pt-BR",
                 timezone_id="UTC",
                 viewport={"width": 1366, "height": 900},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
             )
             page = browser_context.new_page()
             page.set_default_timeout(15000)
+            if stealth_sync is not None:
+                stealth_sync(page)
 
             _run_step_with_retries(
                 lambda: page.goto(final_url, wait_until="domcontentloaded", timeout=30000),
