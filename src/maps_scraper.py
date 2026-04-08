@@ -30,6 +30,7 @@ TEMP_BLOCK_SIGNALS = (
     "tráfego incomum",
     "captcha",
 )
+TIMEOUT_SIGNALS = ("timeout", "timed out", "tempo limite")
 
 
 class MapsScraperError(Exception):
@@ -355,7 +356,7 @@ def _raise_if_temporarily_blocked(page) -> None:
         # Em estados transitórios de renderização, essa leitura pode falhar.
         # Não devemos sobrescrever o fluxo principal nem mascarar o erro real.
         return
-    if any(signal in page_text for signal in TEMP_BLOCK_SIGNALS):
+    if _has_temporary_block_signal(page_text):
         raise MapsScraperError(
             "O Google solicitou validação humana (captcha/tráfego incomum).",
             code=BLOCKED_TEMPORARY,
@@ -366,17 +367,12 @@ def _classify_unexpected_scraper_error(exc: Exception) -> tuple[str, str]:
     details = str(exc).strip()
     normalized = details.lower()
 
-    if any(
-        signal in normalized
-        for signal in (
-            *TEMP_BLOCK_SIGNALS,
-        )
-    ):
+    if _has_temporary_block_signal(normalized):
         return (
             BLOCKED_TEMPORARY,
             "O Google Maps bloqueou temporariamente a coleta automática por validação anti-bot.",
         )
-    if any(signal in normalized for signal in ("timeout", "timed out", "tempo limite")):
+    if any(signal in normalized for signal in TIMEOUT_SIGNALS):
         return (
             TIMEOUT,
             "A coleta excedeu o tempo limite durante a navegação automática no Google Maps.",
@@ -387,6 +383,12 @@ def _classify_unexpected_scraper_error(exc: Exception) -> tuple[str, str]:
         "Não foi possível coletar avaliações automaticamente. "
         "A estrutura do Google Maps pode ter mudado; tente novamente mais tarde.",
     )
+
+
+def _has_temporary_block_signal(text: str) -> bool:
+    if not text:
+        return False
+    return any(signal in text for signal in TEMP_BLOCK_SIGNALS)
 
 
 def _scroll_container(container, page, config: ScraperConfig) -> None:

@@ -78,6 +78,36 @@ if "total_deduped" not in st.session_state:
 if "total_filtered" not in st.session_state:
     st.session_state.total_filtered = 0
 
+
+def _scraper_feedback(code: str, exc: Exception) -> tuple[str, str, str | None]:
+    scraper_error_map = {
+        "BLOCKED_TEMPORARY": (
+            "O Google Maps bloqueou temporariamente a coleta automática.",
+            "Aguarde alguns minutos e tente novamente; se persistir, use Upload de JSON/CSV.",
+        ),
+        "DOM_CHANGED": (
+            "A estrutura da página do Google Maps mudou.",
+            "Tente novamente mais tarde; enquanto isso, use Upload de JSON/CSV.",
+        ),
+        "TIMEOUT": (
+            "A coleta excedeu o tempo limite.",
+            "Tente novamente com menos dias ou use Upload de JSON/CSV.",
+        ),
+        "NO_REVIEWS": (
+            "Não encontramos avaliações no período informado.",
+            "Aumente o intervalo de dias ou valide se o local possui reviews recentes.",
+        ),
+    }
+    friendly_message, suggested_action = scraper_error_map.get(
+        code,
+        (
+            "Falha temporária durante a coleta automática.",
+            "Tente novamente em instantes ou use Upload de JSON/CSV.",
+        ),
+    )
+    technical_detail = str(exc) if code == "BLOCKED_TEMPORARY" else None
+    return friendly_message, suggested_action, technical_detail
+
 if coletar:
     try:
         if modo_coleta == "Coletar automaticamente por URL":
@@ -128,35 +158,11 @@ if coletar:
     except ReviewsNetworkError as exc:
         st.error(f"Timeout ou falha de rede durante a coleta: {exc}")
     except MapsScraperError as exc:
-        scraper_error_map = {
-            "BLOCKED_TEMPORARY": (
-                "O Google Maps bloqueou temporariamente a coleta automática.",
-                "Aguarde alguns minutos e tente novamente; se persistir, use Upload de JSON/CSV.",
-            ),
-            "DOM_CHANGED": (
-                "A estrutura da página do Google Maps mudou.",
-                "Tente novamente mais tarde; enquanto isso, use Upload de JSON/CSV.",
-            ),
-            "TIMEOUT": (
-                "A coleta excedeu o tempo limite.",
-                "Tente novamente com menos dias ou use Upload de JSON/CSV.",
-            ),
-            "NO_REVIEWS": (
-                "Não encontramos avaliações no período informado.",
-                "Aumente o intervalo de dias ou valide se o local possui reviews recentes.",
-            ),
-        }
         code = getattr(exc, "code", "BLOCKED_TEMPORARY")
-        friendly_message, suggested_action = scraper_error_map.get(
-            code,
-            (
-                "Falha temporária durante a coleta automática.",
-                "Tente novamente em instantes ou use Upload de JSON/CSV.",
-            ),
-        )
+        friendly_message, suggested_action, technical_detail = _scraper_feedback(code, exc)
         st.error(f"{friendly_message} ({code})")
-        if code == "BLOCKED_TEMPORARY":
-            st.caption(f"Detalhe técnico: {exc}")
+        if technical_detail:
+            st.caption(f"Detalhe técnico: {technical_detail}")
         st.info(f"Ação sugerida: {suggested_action}")
     except ReviewsServiceError as exc:
         st.error(str(exc))
