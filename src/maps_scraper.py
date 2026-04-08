@@ -133,6 +133,7 @@ def _scrape_with_playwright(
                 PlaywrightTimeoutError,
                 TIMEOUT,
             )
+            _raise_if_temporarily_blocked(page)
 
             _open_reviews_panel(page, config, started_at, PlaywrightTimeoutError)
             _sort_by_most_recent(page, config, started_at, PlaywrightTimeoutError)
@@ -140,6 +141,7 @@ def _scrape_with_playwright(
 
             while True:
                 _ensure_not_timed_out(started_at, config.total_timeout_seconds)
+                _raise_if_temporarily_blocked(page)
 
                 current_batch = _run_step_with_retries(
                     lambda: _extract_reviews_from_dom(page),
@@ -332,6 +334,24 @@ def _extract_reviews_from_dom(page) -> list[dict[str, Any]]:
             }
         )
     return normalized_items
+
+
+def _raise_if_temporarily_blocked(page) -> None:
+    page_text = (page.inner_text("body", timeout=2000) or "").lower()
+    block_signals = [
+        "unusual traffic",
+        "detected unusual traffic",
+        "verify you are human",
+        "i'm not a robot",
+        "não sou um robô",
+        "tráfego incomum",
+        "captcha",
+    ]
+    if any(signal in page_text for signal in block_signals):
+        raise MapsScraperError(
+            "O Google solicitou validação humana (captcha/tráfego incomum).",
+            code=BLOCKED_TEMPORARY,
+        )
 
 
 def _scroll_container(container, page, config: ScraperConfig) -> None:
