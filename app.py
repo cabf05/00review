@@ -1,14 +1,14 @@
 import os
-from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
-from dateutil import parser
+
+from src.reviews_service import ReviewsServiceError, fetch_reviews_from_maps_url
 
 st.set_page_config(page_title="Coletor de Reviews", page_icon="⭐", layout="wide")
 
 st.title("Coletor de Reviews do Google Maps")
-st.caption("Layout inicial para coleta de reviews com Streamlit")
+st.caption("Coleta reviews com provedor gerenciado e respeitando políticas aplicáveis.")
 
 with st.sidebar:
     st.header("Configuração")
@@ -28,7 +28,7 @@ with col2:
     ultimos_dias = st.number_input(
         "Últimos X dias",
         min_value=1,
-        value=2000,
+        value=90,
         step=1,
         help="Filtre reviews publicados nos últimos X dias.",
     )
@@ -42,44 +42,21 @@ if "reviews_df" not in st.session_state:
     st.session_state.reviews_df = pd.DataFrame()
 
 if coletar:
-    if not maps_url:
-        st.warning("Informe uma URL do Google Maps para continuar.")
-    else:
-        # Placeholder de dados para layout inicial.
-        agora = datetime.utcnow()
-        dados_exemplo = [
-            {
-                "autor": "Usuário Exemplo 1",
-                "nota": 5,
-                "comentario": "Excelente atendimento!",
-                "data": (agora - timedelta(days=2)).date().isoformat(),
-                "source_url": maps_url,
-            },
-            {
-                "autor": "Usuário Exemplo 2",
-                "nota": 4,
-                "comentario": "Boa experiência geral.",
-                "data": (agora - timedelta(days=10)).date().isoformat(),
-                "source_url": maps_url,
-            },
-            {
-                "autor": "Usuário Exemplo 3",
-                "nota": 3,
-                "comentario": "Poderia melhorar.",
-                "data": (agora - timedelta(days=40)).date().isoformat(),
-                "source_url": maps_url,
-            },
-        ]
+    try:
+        reviews = fetch_reviews_from_maps_url(maps_url=maps_url, days=int(ultimos_dias))
+        st.session_state.reviews_df = pd.DataFrame(reviews)
 
-        limite = datetime.utcnow() - timedelta(days=int(ultimos_dias))
-        filtrado = []
-        for item in dados_exemplo:
-            data_review = parser.parse(item["data"])
-            if data_review >= limite:
-                filtrado.append(item)
-
-        st.session_state.reviews_df = pd.DataFrame(filtrado)
-        st.success("Coleta concluída (dados de exemplo para o layout inicial).")
+        if st.session_state.reviews_df.empty:
+            st.info("Nenhum review encontrado dentro do período informado.")
+        else:
+            st.success(f"Coleta concluída com {len(st.session_state.reviews_df)} review(s).")
+    except ReviewsServiceError as exc:
+        st.error(str(exc))
+    except Exception:
+        st.error(
+            "Falha inesperada ao coletar reviews. "
+            "Revise a URL/token e tente novamente em alguns minutos."
+        )
 
 if not st.session_state.reviews_df.empty:
     st.dataframe(st.session_state.reviews_df, use_container_width=True)

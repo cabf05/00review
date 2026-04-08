@@ -1,6 +1,6 @@
 # Coletor de Reviews (Streamlit)
 
-Aplicação Streamlit com layout inicial para coleta de reviews a partir de uma URL do Google Maps.
+Aplicação Streamlit para coleta de reviews de locais no Google Maps usando provedor gerenciado (Apify API).
 
 ## Pré-requisitos
 
@@ -23,9 +23,11 @@ Depois, acesse a URL local exibida no terminal (normalmente `http://localhost:85
 
 ## Variáveis de ambiente
 
-A aplicação espera o token do provedor de scraping gerenciado via variável de ambiente:
-
-- `APIFY_TOKEN`: token de acesso da sua conta Apify.
+- `APIFY_TOKEN`: token de acesso da sua conta Apify (obrigatório).
+- `APIFY_REVIEWS_ACTOR_ID`: actor de reviews (opcional, default `compass/google-maps-reviews-scraper`).
+- `APIFY_TIMEOUT_SECS`: timeout da execução do actor em segundos (opcional, default `180`).
+- `APIFY_MAX_RETRIES`: quantidade máxima de tentativas com backoff exponencial (opcional, default `4`).
+- `APIFY_BACKOFF_BASE_SECS`: base em segundos do backoff exponencial (opcional, default `1.5`).
 
 Exemplo (Linux/macOS):
 
@@ -41,23 +43,10 @@ $env:APIFY_TOKEN="seu_token_aqui"
 streamlit run app.py
 ```
 
-## Deploy no Streamlit Cloud
-
-1. Suba este projeto para um repositório GitHub.
-2. Acesse [streamlit.io/cloud](https://streamlit.io/cloud) e conecte sua conta GitHub.
-3. Clique em **New app** e selecione o repositório/branch.
-4. Defina o arquivo principal como `app.py`.
-5. Em **Advanced settings > Secrets**, adicione:
-
-```toml
-APIFY_TOKEN = "seu_token_aqui"
-```
-
-6. Clique em **Deploy**.
-
 ## Estrutura
 
-- `app.py`: entrada principal do Streamlit.
+- `app.py`: interface Streamlit e mensagens amigáveis.
+- `src/reviews_service.py`: valida URL, chama API oficial do provedor, aplica retry/backoff, normaliza e filtra por data absoluta.
 - `requirements.txt`: dependências do projeto.
 - `.streamlit/config.toml`: tema/configuração do app.
 - `README.md`: instruções de uso e deploy.
