@@ -39,6 +39,7 @@ python -m playwright install
 - A automação com browser tende a ter **tempo de processamento maior** que abordagens sem navegação.
 - Plataformas de terceiros podem aplicar **bloqueios temporários** (rate limit, captcha ou respostas intermitentes).
 - Ambientes de nuvem com recursos limitados podem apresentar variação de performance.
+- O scraper usa `playwright-stealth` para reduzir bloqueios por detecção de automação, mas ainda pode haver captcha em picos de tráfego.
 
 ## Recomendações de uso
 

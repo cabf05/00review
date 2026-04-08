@@ -2,3 +2,4 @@ streamlit
 pandas
 python-dateutil
 playwright
+playwright-stealth
