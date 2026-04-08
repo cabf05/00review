@@ -1,6 +1,12 @@
 # Coletor de Reviews (Streamlit)
 
-Aplicação Streamlit com layout inicial para coleta de reviews a partir de uma URL do Google Maps.
+Aplicação Streamlit para **processar e filtrar** reviews do Google Maps no deploy do Streamlit Cloud, **sem uso de serviços pagos**.
+
+## Como funciona
+
+1. Você informa a URL do local no Google Maps (para validação/referência).
+2. Você envia um arquivo `.json` ou `.csv` com os reviews.
+3. O app normaliza as colunas e filtra pelo período (`utc_now - timedelta(days=X)`) usando `publishedAtDate` (ou equivalente).
 
 ## Pré-requisitos
 
@@ -13,51 +19,26 @@ Aplicação Streamlit com layout inicial para coleta de reviews a partir de uma 
 pip install -r requirements.txt
 ```
 
-## Executar localmente
+## Streamlit Cloud (deploy)
 
-```bash
-streamlit run app.py
-```
+- Configure o app com `app.py` como arquivo principal.
+- Não há necessidade de token de serviço pago.
 
-Depois, acesse a URL local exibida no terminal (normalmente `http://localhost:8501`).
+## Formato esperado do arquivo
 
-## Variáveis de ambiente
-
-A aplicação espera o token do provedor de scraping gerenciado via variável de ambiente:
-
-- `APIFY_TOKEN`: token de acesso da sua conta Apify.
-
-Exemplo (Linux/macOS):
-
-```bash
-export APIFY_TOKEN="seu_token_aqui"
-streamlit run app.py
-```
-
-Exemplo (Windows PowerShell):
-
-```powershell
-$env:APIFY_TOKEN="seu_token_aqui"
-streamlit run app.py
-```
-
-## Deploy no Streamlit Cloud
-
-1. Suba este projeto para um repositório GitHub.
-2. Acesse [streamlit.io/cloud](https://streamlit.io/cloud) e conecte sua conta GitHub.
-3. Clique em **New app** e selecione o repositório/branch.
-4. Defina o arquivo principal como `app.py`.
-5. Em **Advanced settings > Secrets**, adicione:
-
-```toml
-APIFY_TOKEN = "seu_token_aqui"
-```
-
-6. Clique em **Deploy**.
+Campos recomendados (aceita aliases comuns):
+- `title`
+- `name`
+- `text`
+- `publishedAtDate` (obrigatório para entrar no filtro de período)
+- `stars`
+- `likesCount`
+- `reviewUrl`
+- `responseFromOwnerText`
 
 ## Estrutura
 
-- `app.py`: entrada principal do Streamlit.
+- `app.py`: interface Streamlit para upload/processamento.
+- `src/reviews_service.py`: valida URL, leitura JSON/CSV, normalização e filtro por data absoluta.
 - `requirements.txt`: dependências do projeto.
-- `.streamlit/config.toml`: tema/configuração do app.
-- `README.md`: instruções de uso e deploy.
+- `README.md`: instruções de uso.
